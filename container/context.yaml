@@ -30,10 +30,12 @@ dynamo:
   nixl_ref: v1.0.0
   nixl_ucx_ref: v1.20.x
   # XPU uses a fork that includes UCX PR #11218 (ZE_IPC) on top of upstream master,
-  # plus ZE gtest unit test additions. Switch back to openucx/ucx + nixl_ucx_ref
-  # once #11218 is merged upstream and ported to a release branch.
+  # plus ZE gtest unit test additions and the scripts/perf_ze_pr_compare.sh helper
+  # used by examples/backends/sglang/launch/xpu/ZE_IPC_BENCH.md to reproduce the
+  # ze_ipc vs ze_copy numbers. Switch back to openucx/ucx + nixl_ucx_ref once
+  # #11218 is merged upstream and ported to a release branch.
   nixl_ucx_xpu_repo: https://github.com/yuanwu2017/ucx.git
-  nixl_ucx_xpu_ref: ze-ipc-updated
+  nixl_ucx_xpu_ref: ze-ipc-perf-script
   nixl_gdrcopy_ref: v2.5.1
   nixl_ucx_efa_ref: 9d2b88a1f67faf9876f267658bd077b379b8bb76
   nixl_libfabric_ref: v2.3.0
