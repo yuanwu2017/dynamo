@@ -27,8 +27,13 @@ dynamo:
   nats_version: v2.10.28
   etcd_version: v3.5.21
 
-  nixl_ref: 0.10.1
+  nixl_ref: v1.0.0
   nixl_ucx_ref: v1.20.x
+  # XPU uses a fork that includes UCX PR #11218 (ZE_IPC) on top of upstream master,
+  # plus ZE gtest unit test additions. Switch back to openucx/ucx + nixl_ucx_ref
+  # once #11218 is merged upstream and ported to a release branch.
+  nixl_ucx_xpu_repo: https://github.com/yuanwu2017/ucx.git
+  nixl_ucx_xpu_ref: ze-ipc-updated
   nixl_gdrcopy_ref: v2.5.1
   nixl_ucx_efa_ref: 9d2b88a1f67faf9876f267658bd077b379b8bb76
   nixl_libfabric_ref: v2.3.0
@@ -90,7 +95,7 @@ sglang:
     base_image_tag: 2025.3.2-0-devel-ubuntu24.04
     runtime_image: intel/deep-learning-essentials
     runtime_image_tag: 2025.3.2-0-devel-ubuntu24.04
-    sglang_ref: e5c2a9b6cf35e163c606ce2349b4c132d3c2e58c
+    sglang_ref: fbebfdec9a6486d43ae24e88e00f776c1149afe1
   # NIXL stack source by device:
   # - CUDA SGLang: comes from the upstream lmsysorg/sglang runtime image
   #   (Dynamo does not build/install its NIXL wheel for CUDA, and SGLang

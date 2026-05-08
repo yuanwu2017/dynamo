@@ -69,8 +69,9 @@ RUN wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRO
     echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | tee /etc/apt/sources.list.d/oneAPI.list && \
     add-apt-repository -y ppa:kobuk-team/intel-graphics
 
-# Fetch UCX patch
-RUN wget --tries=3 --waitretry=5 https://raw.githubusercontent.com/intel/llm-scaler/35a14cbc08d714f460a29b7a7328df5620c8530f/vllm/patches/ai-dynamo-xpu/patches/ucx-v1.12.0.patch -O /tmp/ucx.patch
+# UCX for XPU is pulled from a fork branch (NIXL_UCX_REPO/NIXL_UCX_XPU_REF) that
+# already contains PR #11218 (ZE_IPC) and the legacy XPU GDR fixes formerly
+# applied via ucx-v1.12.0.patch -- so no separate patch fetch is needed.
 
 # Install Intel GPU runtime packages
 RUN apt update -y && apt upgrade -y && \
@@ -218,6 +219,12 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=shared \
     uv pip install --upgrade meson pybind11 patchelf maturin[patchelf] tomlkit
 
 ARG NIXL_UCX_REF
+{% if device == "xpu" %}
+ARG NIXL_UCX_REPO
+ARG NIXL_UCX_XPU_REF
+{% else %}
+ARG NIXL_UCX_REPO=https://github.com/openucx/ucx.git
+{% endif %}
 
 {% if device == "cuda" %}
 ARG NIXL_GDRCOPY_REF
@@ -304,11 +311,10 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
         eval $(/tmp/use-sccache.sh setup-env); \
     fi && \
     cd /usr/local/src && \
-    git clone https://github.com/openucx/ucx.git && \
-    cd ucx &&  \
-    git checkout $NIXL_UCX_REF &&	 \
     if [ "$DEVICE" = "xpu" ]; then \
-    git apply --ignore-whitespace /tmp/ucx.patch; \
+        git clone $NIXL_UCX_REPO ucx && cd ucx && git checkout $NIXL_UCX_XPU_REF; \
+    else \
+        git clone $NIXL_UCX_REPO ucx && cd ucx && git checkout $NIXL_UCX_REF; \
     fi && \
     ./autogen.sh &&      \
     if [ "$DEVICE" = "xpu" ]; then \
@@ -511,6 +517,14 @@ ARG USE_SCCACHE
 ARG CUDA_MAJOR
 {% endif %}
 
+{% if device == "xpu" %}
+# Apply XPU support patches to NIXL (PR #1534 + #1536 backports against v1.0.0).
+# These add Intel XPU device recognition (xpu -> VRAM_SEG) and UCX VRAM
+# memtype hinting (auto-selects ZE_DEVICE on Level Zero-only stacks) so that
+# RDMA transfers of XPU device memory work correctly via NIXL/UCX.
+COPY container/patches/nixl/nixl-xpu-support.patch /tmp/nixl-xpu-support.patch
+{% endif %}
+
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
     export AWS_WEB_IDENTITY_TOKEN_FILE=/run/secrets/aws-token && \
@@ -522,6 +536,9 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     git clone "https://github.com/ai-dynamo/nixl.git" && \
     cd nixl && \
     git checkout ${NIXL_REF} && \
+    if [ "$DEVICE" = "xpu" ]; then \
+        git apply --ignore-whitespace /tmp/nixl-xpu-support.patch; \
+    fi && \
     if [ "$DEVICE" = "cuda" ]; then \
         PKG_NAME="nixl-cu${CUDA_MAJOR}"; \
     else \

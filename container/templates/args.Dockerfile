@@ -66,6 +66,13 @@ ARG SCCACHE_REGION=""
 
 # NIXL configuration
 ARG NIXL_UCX_REF={{ context.dynamo.nixl_ucx_ref }}
+{% if device == "xpu" -%}
+# XPU pulls UCX from a fork that carries PR #11218 (ZE_IPC) + ZE gtest tests.
+ARG NIXL_UCX_REPO={{ context.dynamo.nixl_ucx_xpu_repo }}
+ARG NIXL_UCX_XPU_REF={{ context.dynamo.nixl_ucx_xpu_ref }}
+{% else -%}
+ARG NIXL_UCX_REPO=https://github.com/openucx/ucx.git
+{% endif -%}
 {% if "nixl_ref" in context[framework] -%}
 ARG NIXL_REF={{ context[framework].nixl_ref }}
 {% elif device == "xpu" -%}
@@ -144,7 +151,7 @@ ARG TRTLLM_PYTHON_VERSION={{ context[framework].python_version }}
 ARG SGLANG_GIT_URL=https://github.com/sgl-project/sglang.git
 ARG SGLANG_REF={{ context.sglang.xpu.sglang_ref }}
 ARG SGLANG_KERNEL_GIT_URL=https://github.com/sgl-project/sgl-kernel-xpu.git
-ARG SGLANG_KERNEL_REF=c668bb67fca82c59a6dfdbc4df69075ebddc849d
+ARG SGLANG_KERNEL_REF=8535aa6772dfd75effa212e28c531f3d2d1faa59
 {%- endif -%}
 
 {% if make_efa == true %}

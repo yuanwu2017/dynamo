@@ -1,0 +1,170 @@
+diff --git a/src/api/python/_api.py b/src/api/python/_api.py
+index 6fa8c16..d0e37dc 100644
+--- a/src/api/python/_api.py
++++ b/src/api/python/_api.py
+@@ -242,6 +242,7 @@ class nixl_agent:
+             "OBJ": nixlBind.OBJ_SEG,
+             "cpu": nixlBind.DRAM_SEG,
+             "cuda": nixlBind.VRAM_SEG,
++            "xpu": nixlBind.VRAM_SEG,
+         }
+         self.nixl_ops = {
+             "WRITE": nixlBind.NIXL_WRITE,
+@@ -952,7 +953,13 @@ class nixl_agent:
+                 new_descs = None
+         elif isinstance(descs, torch.Tensor):
+             if descs.is_contiguous():
+-                mem_type = "cuda" if str(descs.device).startswith("cuda") else "cpu"
++                dev_str = str(descs.device)
++                if dev_str.startswith("cuda"):
++                    mem_type = "cuda"
++                elif dev_str.startswith("xpu"):
++                    mem_type = "xpu"
++                else:
++                    mem_type = "cpu"
+                 base_addr = descs.data_ptr()
+                 region_len = descs.numel() * descs.element_size()
+                 gpu_id = descs.get_device()
+@@ -980,7 +987,13 @@ class nixl_agent:
+                 if gpu_id == -1:  # DRAM
+                     gpu_id = 0
+                 dlist[i, :] = (base_addr, region_len, gpu_id)
+-            mem_type = "cuda" if str(tensor_type).startswith("cuda") else "cpu"
++            dev_str = str(tensor_type)
++            if dev_str.startswith("cuda"):
++                mem_type = "cuda"
++            elif dev_str.startswith("xpu"):
++                mem_type = "xpu"
++            else:
++                mem_type = "cpu"
+             new_descs = nixlBind.nixlXferDList(self.nixl_mems[mem_type], dlist)
+         else:
+             new_descs = None
+@@ -1035,7 +1048,13 @@ class nixl_agent:
+                 new_descs = None
+         elif isinstance(descs, torch.Tensor):
+             if descs.is_contiguous():
+-                mem_type = "cuda" if str(descs.device).startswith("cuda") else "cpu"
++                dev_str = str(descs.device)
++                if dev_str.startswith("cuda"):
++                    mem_type = "cuda"
++                elif dev_str.startswith("xpu"):
++                    mem_type = "xpu"
++                else:
++                    mem_type = "cpu"
+                 base_addr = descs.data_ptr()
+                 region_len = descs.numel() * descs.element_size()
+                 gpu_id = descs.get_device()
+@@ -1063,7 +1082,13 @@ class nixl_agent:
+                 if gpu_id == -1:  # DRAM
+                     gpu_id = 0
+                 dlist[i, :] = (base_addr, region_len, gpu_id)
+-            mem_type = "cuda" if str(tensor_type).startswith("cuda") else "cpu"
++            dev_str = str(tensor_type)
++            if dev_str.startswith("cuda"):
++                mem_type = "cuda"
++            elif dev_str.startswith("xpu"):
++                mem_type = "xpu"
++            else:
++                mem_type = "cpu"
+             new_descs = nixlBind.nixlRegDList(self.nixl_mems[mem_type], dlist)
+         else:
+             new_descs = None
+diff --git a/src/plugins/ucx/ucx_utils.cpp b/src/plugins/ucx/ucx_utils.cpp
+index a5a0cfe..d1d9869 100644
+--- a/src/plugins/ucx/ucx_utils.cpp
++++ b/src/plugins/ucx/ucx_utils.cpp
+@@ -17,6 +17,8 @@
+ 
+ #include "ucx_utils.h"
+ 
++#include <optional>
++
+ #include <algorithm>
+ #include <cstring>
+ #include <exception>
+@@ -479,6 +481,38 @@ nixlUcxContext::nixlUcxContext(const std::vector<std::string> &devs,
+         throw std::runtime_error("Failed to create UCX context: " +
+                                  std::string(ucs_status_string(status)));
+     }
++
++    resolveVramMemTypeHint();
++}
++
++void
++nixlUcxContext::resolveVramMemTypeHint() {
++    ucp_context_attr_t context_attr = {
++        .field_mask = UCP_ATTR_FIELD_MEMORY_TYPES,
++    };
++
++    const auto status = ucp_context_query(ctx, &context_attr);
++    if (status != UCS_OK) {
++        NIXL_WARN << "Failed to query UCX context memory types: "
++                  << ucs_status_string(status)
++                  << ", VRAM memory type hinting will be disabled";
++        return;
++    }
++
++    // Auto-detect: use ZE_DEVICE hint if Level Zero is the only accelerator
++    const bool has_ze = (context_attr.memory_types >> UCS_MEMORY_TYPE_ZE_DEVICE) & 1;
++    const bool has_cuda = ((context_attr.memory_types >> UCS_MEMORY_TYPE_CUDA) & 1) ||
++                          ((context_attr.memory_types >> UCS_MEMORY_TYPE_CUDA_MANAGED) & 1);
++    const bool has_rocm = (context_attr.memory_types >> UCS_MEMORY_TYPE_ROCM) & 1;
++
++    if (has_ze && !has_cuda && !has_rocm) {
++        vramMemTypeHint_ = UCS_MEMORY_TYPE_ZE_DEVICE;
++        NIXL_INFO << "VRAM memtype hint: auto-selected ze-device "
++                  << "based on UCX context memory types";
++    } else {
++        NIXL_DEBUG << "VRAM memtype hint: no unambiguous accelerator; "
++                   << "UCX auto-detection will be used";
++    }
+ }
+ 
+ nixlUcxContext::~nixlUcxContext() {
+@@ -572,6 +606,14 @@ nixlUcxContext::memReg(void *addr, size_t size, nixlUcxMem &mem, nixl_mem_t nixl
+         .length = mem.size,
+     };
+ 
++    if (nixl_mem_type == nixl_mem_t::VRAM_SEG && vramMemTypeHint_.has_value()) {
++        mem_params.field_mask |= UCP_MEM_MAP_PARAM_FIELD_MEMORY_TYPE;
++        mem_params.memory_type = *vramMemTypeHint_;
++        NIXL_DEBUG << "memReg: hinting "
++                   << ucs_memory_type_names[static_cast<unsigned>(*vramMemTypeHint_)]
++                   << " for VRAM_SEG";
++    }
++
+     ucs_status_t status = ucp_mem_map(ctx, &mem_params, &mem.memh);
+     if (status != UCS_OK) {
+         NIXL_ERROR << "Failed to ucp_mem_map: " << ucs_status_string(status);
+@@ -590,7 +632,7 @@ nixlUcxContext::memReg(void *addr, size_t size, nixlUcxMem &mem, nixl_mem_t nixl
+ 
+         if (attr.mem_type == UCS_MEMORY_TYPE_HOST) {
+             NIXL_ERROR << "VRAM memory is detected as host by UCX. "
+-                          "UCX is likely not configured with CUDA support. "
++                          "UCX memory type detection/configuration is likely mismatched. "
+                           "VRAM registration cannot proceed.";
+             ucp_mem_unmap(ctx, mem.memh);
+             return -1;
+diff --git a/src/plugins/ucx/ucx_utils.h b/src/plugins/ucx/ucx_utils.h
+index 00c38b1..91829df 100644
+--- a/src/plugins/ucx/ucx_utils.h
++++ b/src/plugins/ucx/ucx_utils.h
+@@ -18,6 +18,7 @@
+ #define NIXL_SRC_UTILS_UCX_UCX_UTILS_H
+ 
+ #include <memory>
++#include <optional>
+ #include <type_traits>
+ 
+ extern "C" {
+@@ -201,6 +202,9 @@ private:
+     ucp_context_h ctx;
+     const nixl_ucx_mt_t mtType_;
+     const unsigned ucpVersion_;
++    std::optional<ucs_memory_type_t> vramMemTypeHint_;
++
++    void resolveVramMemTypeHint();
+ 
+ public:
+     nixlUcxContext(const std::vector<std::string> &devs,
